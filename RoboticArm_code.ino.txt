@@ -1,0 +1,265 @@
+// ============================================================
+//  INDUSTRIAL MASTER-SLAVE ROBOTIC ARM
+//  ESP32 + PCA9685 + 6 SERVOMOTORS
+//  Modes : Mirror | Record | Replay
+//  EMA Filter (alpha = 0.05)
+//  SDA = GPIO23  |  SCL = GPIO22
+// ============================================================
+
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+
+Adafruit_PWMServoDriver pca = Adafruit_PWMServoDriver(0x40);
+
+#define SERVO_FREQ  50
+
+// ============================================================
+// INDIVIDUAL PARAMETERS PER SERVO (channels 0 to 5)
+// ★ Adjust MIN/MAX according to your servo type
+// ============================================================
+
+// --- SERVO 0 (Shoulder) ---
+#define S0_MIN      150
+#define S0_MAX      600
+#define S0_POT_MIN  0
+#define S0_POT_MAX  4095
+
+// --- SERVO 1 (Elbow) ---
+#define S1_MIN      150
+#define S1_MAX      600
+#define S1_POT_MIN  0
+#define S1_POT_MAX  4095
+
+// --- SERVO 2 (Forearm) ---
+#define S2_MIN      150
+#define S2_MAX      600
+#define S2_POT_MIN  0
+#define S2_POT_MAX  4095
+
+// --- SERVO 3 (Wrist) ---
+#define S3_MIN      150
+#define S3_MAX      600
+#define S3_POT_MIN  0
+#define S3_POT_MAX  4095
+
+// --- SERVO 4 (Gripper) ---
+#define S4_MIN      150
+#define S4_MAX      600
+#define S4_POT_MIN  0
+#define S4_POT_MAX  4095
+
+// --- SERVO 5 (Platform) ---
+#define S5_MIN      150
+#define S5_MAX      600
+#define S5_POT_MIN  0
+#define S5_POT_MAX  4095
+
+// ============================================================
+// POTENTIOMETER PINS (ADC1 only)
+// ============================================================
+const int PIN_POT[6] = {34, 35, 32, 33, 25, 26};
+// POT 0→4 : servos 0 to 4  |  POT 5 : platform (servo 5)
+
+// ============================================================
+// SWITCH + BUTTON PINS
+// ============================================================
+#define PIN_SW_MIRROR  18
+#define PIN_SW_REPLAY  19
+#define PIN_BTN_REC     5
+
+// ============================================================
+// EMA FILTER
+// ============================================================
+#define ALPHA  0.05f
+float valEMA[6];
+
+// ============================================================
+// SEQUENCE STORAGE IN RAM
+// ============================================================
+#define MAX_FRAMES  1000
+#define NB_AXES     6
+
+int sequence[MAX_FRAMES][NB_AXES];
+int nbFrames = 0;
+
+// ============================================================
+// SYSTEM STATE
+// ============================================================
+enum Mode { MIRROR, RECORD, REPLAY, STOP };
+Mode currentMode = STOP;
+
+// ============================================================
+// READ SWITCH
+// ============================================================
+Mode readSwitch() {
+  if (digitalRead(PIN_SW_MIRROR) == LOW) return MIRROR;
+  if (digitalRead(PIN_SW_REPLAY) == LOW) return REPLAY;
+  return STOP;
+}
+
+// ============================================================
+// SETUP
+// ============================================================
+void setup() {
+  Serial.begin(115200);
+  Serial.println("=== MASTER-SLAVE ROBOTIC ARM ===");
+
+  Wire.begin(23, 22);  // SDA=23, SCL=22
+  pca.begin();
+  pca.setOscillatorFrequency(27000000);
+  pca.setPWMFreq(SERVO_FREQ);
+  delay(10);
+
+  // Potentiometer pins
+  for (int i = 0; i < 6; i++) pinMode(PIN_POT[i], INPUT);
+
+  // Switch + button pins
+  pinMode(PIN_SW_MIRROR, INPUT_PULLUP);
+  pinMode(PIN_SW_REPLAY, INPUT_PULLUP);
+  pinMode(PIN_BTN_REC,   INPUT_PULLUP);
+
+  // Initialize EMA with actual readings
+  for (int i = 0; i < 6; i++) {
+    valEMA[i] = analogRead(PIN_POT[i]);
+  }
+
+  // Center all 6 servos at startup
+  pca.setPWM(0, 0, map(90, 0, 180, S0_MIN, S0_MAX));
+  pca.setPWM(1, 0, map(90, 0, 180, S1_MIN, S1_MAX));
+  pca.setPWM(2, 0, map(90, 0, 180, S2_MIN, S2_MAX));
+  pca.setPWM(3, 0, map(90, 0, 180, S3_MIN, S3_MAX));
+  pca.setPWM(4, 0, map(90, 0, 180, S4_MIN, S4_MAX));
+  pca.setPWM(5, 0, map(90, 0, 180, S5_MIN, S5_MAX));
+
+  Serial.println("System ready.");
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+void loop() {
+  static bool prevBtn = HIGH;
+  static unsigned long lastTime = 0;
+
+  // --- Read mode via switch ---
+  Mode newMode = readSwitch();
+  if (newMode != currentMode) {
+    if (currentMode == RECORD && newMode == MIRROR ) {
+    }else {
+      if (currentMode == RECORD){
+      Serial.print("Recording finished. Frames: ");
+      Serial.println(nbFrames);
+      
+    }
+    currentMode = newMode;
+    if (currentMode == MIRROR)  Serial.println("Mode: MIRROR");
+    if (currentMode == REPLAY)  Serial.println("Mode: REPLAY");
+    if (currentMode == STOP)    Serial.println("Mode: STOP");
+    }
+   }
+
+  // --- Record button (improved debounce) ---
+  bool currentBtn = digitalRead(PIN_BTN_REC);
+  if (currentBtn == LOW && prevBtn == HIGH) {
+
+    // Wait for button to be fully released
+    delay(50);
+    while (digitalRead(PIN_BTN_REC) == LOW) {
+      delay(10);
+    }
+    delay(50); // Stabilization after release
+
+    if (currentMode == MIRROR) {
+      currentMode = RECORD;
+      nbFrames = 0;
+      lastTime = millis(); // Reset timer
+      Serial.println("Recording started...");
+    } else if (currentMode == RECORD) {
+      currentMode = MIRROR;
+      Serial.print("Recording stopped. Frames: ");
+      Serial.println(nbFrames);
+    }
+  }
+  prevBtn = currentBtn;
+
+  // -------------------------------------------------------
+  // MODE LOGIC
+  // -------------------------------------------------------
+
+  if (currentMode == MIRROR || currentMode == RECORD) {
+
+    // --- SERVO 0 ---
+    valEMA[0] = ALPHA * analogRead(PIN_POT[0]) + (1.0f - ALPHA) * valEMA[0];
+    int a0 = constrain(map((int)valEMA[0], S0_POT_MIN, S0_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(0, 0, map(a0, 0, 180, S0_MIN, S0_MAX));
+
+    // --- SERVO 1 ---
+    valEMA[1] = ALPHA * analogRead(PIN_POT[1]) + (1.0f - ALPHA) * valEMA[1];
+    int a1 = constrain(map((int)valEMA[1], S1_POT_MIN, S1_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(1, 0, map(a1, 0, 180, S1_MIN, S1_MAX));
+
+    // --- SERVO 2 ---
+    valEMA[2] = ALPHA * analogRead(PIN_POT[2]) + (1.0f - ALPHA) * valEMA[2];
+    int a2 = constrain(map((int)valEMA[2], S2_POT_MIN, S2_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(2, 0, map(a2, 0, 180, S2_MIN, S2_MAX));
+
+    // --- SERVO 3 ---
+    valEMA[3] = ALPHA * analogRead(PIN_POT[3]) + (1.0f - ALPHA) * valEMA[3];
+    int a3 = constrain(map((int)valEMA[3], S3_POT_MIN, S3_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(3, 0, map(a3, 0, 180, S3_MIN, S3_MAX));
+
+    // --- SERVO 4 ---
+    valEMA[4] = ALPHA * analogRead(PIN_POT[4]) + (1.0f - ALPHA) * valEMA[4];
+    int a4 = constrain(map((int)valEMA[4], S4_POT_MIN, S4_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(4, 0, map(a4, 0, 180, S4_MIN, S4_MAX));
+
+    // --- SERVO 5 (Platform) ---
+    valEMA[5] = ALPHA * analogRead(PIN_POT[5]) + (1.0f - ALPHA) * valEMA[5];
+    int a5 = constrain(map((int)valEMA[5], S5_POT_MIN, S5_POT_MAX, 0, 180), 0, 180);
+    pca.setPWM(5, 0, map(a5, 0, 180, S5_MIN, S5_MAX));
+
+    // Record every 10ms
+    if (currentMode == RECORD && nbFrames < MAX_FRAMES) {
+      unsigned long now = millis();
+      if (now - lastTime >= 10) {
+        sequence[nbFrames][0] = a0;
+        sequence[nbFrames][1] = a1;
+        sequence[nbFrames][2] = a2;
+        sequence[nbFrames][3] = a3;
+        sequence[nbFrames][4] = a4;
+        sequence[nbFrames][5] = a5;
+        nbFrames++;
+        lastTime = now;
+      }
+    }
+
+  } else if (currentMode == REPLAY) {
+
+    if (nbFrames == 0) {
+      Serial.println("No sequence recorded!");
+      delay(1000);
+      return;
+    }
+
+    Serial.println("Playing sequence...");
+    for (int f = 0; f < nbFrames; f++) {
+      if (readSwitch() != REPLAY) {
+        currentMode = readSwitch();
+        Serial.println("Replay interrupted.");
+        return;
+      }
+      pca.setPWM(0, 0, map(sequence[f][0], 0, 180, S0_MIN, S0_MAX));
+      pca.setPWM(1, 0, map(sequence[f][1], 0, 180, S1_MIN, S1_MAX));
+      pca.setPWM(2, 0, map(sequence[f][2], 0, 180, S2_MIN, S2_MAX));
+      pca.setPWM(3, 0, map(sequence[f][3], 0, 180, S3_MIN, S3_MAX));
+      pca.setPWM(4, 0, map(sequence[f][4], 0, 180, S4_MIN, S4_MAX));
+      pca.setPWM(5, 0, map(sequence[f][5], 0, 180, S5_MIN, S5_MAX));
+      delay(10);
+    }
+    Serial.println("Replay finished.");
+    delay(500);
+
+  } else if (currentMode == STOP) {
+    delay(50);
+  }
+}
