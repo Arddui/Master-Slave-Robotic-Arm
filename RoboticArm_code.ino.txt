@@ -3,7 +3,6 @@
 //  ESP32 + PCA9685 + 6 SERVOMOTORS
 //  Modes : Mirror | Record | Replay
 //  EMA Filter (alpha = 0.05)
-//  SDA = GPIO23  |  SCL = GPIO22
 // ============================================================
 
 #include <Wire.h>
@@ -104,7 +103,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("=== MASTER-SLAVE ROBOTIC ARM ===");
 
-  Wire.begin(23, 22);  // SDA=23, SCL=22
+  Wire.begin(23, 22);  
   pca.begin();
   pca.setOscillatorFrequency(27000000);
   pca.setPWMFreq(SERVO_FREQ);
